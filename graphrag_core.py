@@ -8,13 +8,21 @@ from sentence_transformers import SentenceTransformer
 import logging
 import re
 import google.generativeai as genai
+                            
+# Secrets from Streamlit Cloud
+API_KEY = st.secrets["GEMINI_API_KEY"]
+NEO4J_URI = st.secrets["NEO4J_URI"]
+NEO4J_USER = st.secrets["NEO4J_USER"]
+NEO4J_PASSWORD = st.secrets["NEO4J_PASSWORD"]
 
-# === CONFIG ===
-API_KEY = "AIzaSyAC8JjMucGdBKoU_6Ya9wMuhTCVmeBtbpA"
+# Configure Gemini
 genai.configure(api_key=API_KEY)
 llm_model = genai.GenerativeModel('gemini-2.0-flash')
 
-graph = Graph("bolt://localhost:7687", auth=("neo4j", "FSSTool*#"))
+# Connect to Aura (not local Neo4j)
+graph = Graph(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+
+
 index = faiss.read_index("faiss_indexmain.idx")
 with open("vector_metadatamain.json", "r", encoding="utf-8") as f:
     metadata = json.load(f)
@@ -176,3 +184,4 @@ Based only on this context:
 Your Answer:
 """
     return call_gemini(final_prompt, temperature, max_tokens)
+
