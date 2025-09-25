@@ -9,21 +9,29 @@ import logging
 import re
 import google.generativeai as genai
 import streamlit as st
-                            
-# Secrets from Streamlit Cloud
+
+# === STREAMLIT SECRETS ===
 API_KEY = st.secrets["GEMINI_API_KEY"]
-NEO4J_URI = st.secrets["NEO4J_URI"]
-NEO4J_USER = st.secrets["NEO4J_USER"]
+NEO4J_URI = st.secrets["NEO4J_URI"]        # e.g. "neo4j+s://xxxx.databases.neo4j.io"
+NEO4J_USER = st.secrets["NEO4J_USER"]      # "neo4j"
 NEO4J_PASSWORD = st.secrets["NEO4J_PASSWORD"]
 
-# Configure Gemini
+# === GEMINI CONFIG ===
 genai.configure(api_key=API_KEY)
-llm_model = genai.GenerativeModel('gemini-2.0-flash')
+llm_model = genai.GenerativeModel("gemini-2.0-flash")
 
-# Connect to Aura (not local Neo4j)
-graph = GraphDatabase.graph(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+# === NEO4J CONNECTION ===
+driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
+def run_cypher(query, params=None):
+    """Run Cypher query on Aura and return results as list of dicts"""
+    if params is None:
+        params = {}
+    with driver.session() as session:
+        result = session.run(query, params)
+        return [record.data() for record in result]
 
+# === FAISS + EMBEDDINGS ===
 index = faiss.read_index("faiss_indexmain.idx")
 with open("vector_metadatamain.json", "r", encoding="utf-8") as f:
     metadata = json.load(f)
@@ -67,18 +75,19 @@ User Question:
     try:
         match = re.search(r"\{.*\}", response.text, re.DOTALL)
         return json.loads(match.group(0)) if match else json.loads(response.text)
-    except:
+    except Exception as e:
+        logger.error(f"❌ Intent parse error: {e}")
         return {"client": "", "technology": "", "capability": "", "geography": "", "intent": "general_query"}
 
 # === DOCUMENT RETRIEVAL BY CLIENT ===
 def get_all_client_documents(client_name):
-    query = f"""
+    query = """
     MATCH (c:Client)<-[:ABOUT]-(d:Document)
-    WHERE toLower(c.name) CONTAINS toLower("{client_name}")
+    WHERE toLower(c.name) CONTAINS toLower($client)
     RETURN d.file_name AS file_name, d.slide_number AS slide_number, d.text AS text
     ORDER BY d.file_name, d.slide_number
     """
-    return graph.run(query).data()
+    return run_cypher(query, {"client": client_name})
 
 # === RAG SEARCH ===
 def search_rag_context(query, top_k=100):
@@ -88,19 +97,19 @@ def search_rag_context(query, top_k=100):
 
 # === FIND CLIENT FOR SLIDE ===
 def find_client(file, slide):
-    q = f'''
-    MATCH (d:Document {{file_name: "{file}", slide_number: {slide}}})-[:ABOUT]->(c:Client)
+    query = """
+    MATCH (d:Document {file_name: $file, slide_number: $slide})-[:ABOUT]->(c:Client)
     RETURN c.name AS client_name
-    '''
-    res = graph.run(q).data()
-    return res[0]['client_name'] if res else "CLIENT_NOT_SPECIFIED"
+    """
+    res = run_cypher(query, {"file": file, "slide": slide})
+    return res[0]["client_name"] if res else "CLIENT_NOT_SPECIFIED"
 
 # === GEMINI CALL ===
 def call_gemini(prompt, temperature=0.1, max_tokens=2048):
     try:
         res = llm_model.generate_content(
             prompt,
-            generation_config={"temperature": temperature, "max_output_tokens": max_tokens}
+            generation_config={"temperature": temperature, "max_output_tokens": max_tokens},
         )
         return res.text
     except Exception as e:
@@ -111,9 +120,9 @@ def call_gemini(prompt, temperature=0.1, max_tokens=2048):
 def format_context(entries, remove_warnings=True):
     result = ""
     for entry in entries:
-        file = entry.get('file_name', 'N/A')
-        slide = entry.get('slide_number', '?')
-        text = entry.get('text', '')
+        file = entry.get("file_name", "N/A")
+        slide = entry.get("slide_number", "?")
+        text = entry.get("text", "")
         client = find_client(file, slide)
 
         if remove_warnings and "!!! Please remove all client logos" in text:
@@ -125,13 +134,13 @@ def format_context(entries, remove_warnings=True):
         result += f"[{file} | Slide {slide}] {text.strip()}\n"
     return result, len(entries)
 
-# === MAIN FUNCTION TO CALL FROM STREAMLIT ===
+# === MAIN FUNCTION CALLED BY STREAMLIT ===
 def process_question(question, top_k=100, temperature=0.1, max_tokens=2048):
     parsed = analyze_question(question)
     logger.info(f"Entities: {parsed}")
 
-    if parsed['intent'] == "summarize_client_relationship" and parsed['client']:
-        docs = get_all_client_documents(parsed['client'])
+    if parsed["intent"] == "summarize_client_relationship" and parsed["client"]:
+        docs = get_all_client_documents(parsed["client"])
         context, count = format_context(docs)
         if not context.strip():
             return "❌ No relevant content found."
@@ -139,18 +148,14 @@ def process_question(question, top_k=100, temperature=0.1, max_tokens=2048):
         final_prompt = f"""
 You are an expert IBM Consulting analyst writing a formal summary for leadership.
 
-User asked to summarize the IBM relationship with client '{parsed['client']}' or provide details for any specific information.
+User asked to summarize the IBM relationship with client '{parsed['client']}'.
 
-Write a DETAILED paragraphs (not bullets) with proper flow. For each fact, include:
-- [file_name | Slide number] in brackets after the sentence
-- Cover all programs, technologies, milestones and any other information asked in the question
+Write detailed paragraphs (not bullets) with proper flow. For each fact, include:
+- [file_name | Slide number] after the sentence
+- Cover all programs, technologies, milestones
 - Use only the context provided below
 - DO NOT fabricate anything
-- Break the paragraphs according to the information sections and relevance of information. Create meaningful paragraphs.
-- Do not try to put everything in one single paragraph when information retrieved is a lot to present.
-
-Ignore lines like:
-!!! Please remove all client logos and references before sharing any case study with customer !!!
+- Break into meaningful paragraphs.
 
 Context:
 {context}
@@ -171,20 +176,13 @@ Relevant context from documents:
 {context}
 
 Based only on this context:
-- Answer the question truthfully and completely.
-- If it's a catalog or list, show 20 entries in the way the user has asked, then say how many more exist and ask the user to refine the search to get specific responses.
-- For list type questions give proper pointers and a list of outcome not a paragraph. When more details are asked in a list or catalogue type question answer systematically.
-- If no relevant information found, say: "No relevant information was found in the database."
-- Use paragraph format (NO bullet points).
-- Include file name and slide number after each fact, like [Slide.pptx | Slide 3].
-- Not all questions may specifically use the word summarize, you need to understand if the question is a list type or a short answer type question or answer in brief or a detailed question.
-- Ignore this line if found: "!!! Please remove all client logos..."
-- If the summarization answers are too long and the word limits are exceeded please ask for a word limit and try to completely summarize everything in a concise manner so that no information is missed.
-- focus on being very detailed about what the user has asked you to respond.
+- Answer truthfully and completely.
+- If it's a catalog or list, show max 20 entries, then say how many more exist.
+- For lists, give a clean structured list.
+- If no relevant info, say: "No relevant information was found in the database."
+- Always include [file | Slide] references.
+- Ignore noise lines like "!!! Please remove all client logos..."
 
 Your Answer:
 """
     return call_gemini(final_prompt, temperature, max_tokens)
-
-
-
