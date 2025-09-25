@@ -3,7 +3,7 @@
 import os
 import json
 import faiss
-from py2neo import Graph
+from neo4j import GraphDatabase
 from sentence_transformers import SentenceTransformer
 import logging
 import re
@@ -21,7 +21,7 @@ genai.configure(api_key=API_KEY)
 llm_model = genai.GenerativeModel('gemini-2.0-flash')
 
 # Connect to Aura (not local Neo4j)
-graph = Graph(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+graph = GraphDatabase.graph(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 
 index = faiss.read_index("faiss_indexmain.idx")
@@ -185,5 +185,6 @@ Based only on this context:
 Your Answer:
 """
     return call_gemini(final_prompt, temperature, max_tokens)
+
 
 
