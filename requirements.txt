@@ -3,4 +3,3 @@ faiss-cpu
 sentence-transformers
 py2neo
 google-generativeai
-graphrag_core
