@@ -1,5 +1,5 @@
 streamlit
 faiss-cpu
 sentence-transformers
-py2neo
+neo4j
 google-generativeai
