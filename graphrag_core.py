@@ -8,6 +8,7 @@ from sentence_transformers import SentenceTransformer
 import logging
 import re
 import google.generativeai as genai
+import streamlit as st
                             
 # Secrets from Streamlit Cloud
 API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -184,4 +185,5 @@ Based only on this context:
 Your Answer:
 """
     return call_gemini(final_prompt, temperature, max_tokens)
+
 
